@@ -222,13 +222,12 @@ class GreedySolver:
             next_moves = self.game.get_legal_moves()
             score += len(next_moves) * 10
             
-            # Centrality (Target is center)
+            # Centrality 
             end_r, end_c = self.game.graph.nodes[end]
             if 2 <= end_r <= 4 and 2 <= end_c <= 4:
                 score += 5
             
-            # Improved Heuristic: Check for isolated pegs?
-            # (Omitted for performance speed in Python, but 'Mobility' usually covers this implicitly)
+            
             
             if score > best_score:
                 best_score = score
@@ -239,8 +238,7 @@ class GreedySolver:
             # 3. Restore State
             self.game.pegs = list(original_pegs)
             
-        # Tie-breaker: Pick random or specific one from best_moves
-        # We pick the first one which is usually fine
+
         return best_moves[0] if best_moves else None
 
 
@@ -354,10 +352,9 @@ class GameFrame(tk.Frame):
         offset_x = (width - cols * cell_size) // 2
         offset_y = (height - rows * cell_size) // 2
         self.node_centers = {} # ID -> (x, y)
-        # 1. Draw connections (optional, but shows graph structure)
-        # We won't draw lines to keep it clean, but holes imply structure.
 
-        # 2. Draw Holes/Pegs
+
+        # Draw Holes/Pegs
         for idx in range(len(self.graph.nodes)):
             r, c = self.graph.nodes[idx]
             x = offset_x + c * cell_size + cell_size // 2
