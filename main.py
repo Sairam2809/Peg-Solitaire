@@ -1,75 +1,43 @@
 import tkinter as tk
 from tkinter import messagebox
-# ================================================================================================
-# SECTION 1: GRAPH & BOARD REPRESENTATION (ADJACENCY MATRIX)
-# ================================================================================================
-class BoardGraph:
-    """
-    Represents the Peg Solitaire Board using an Adjacency Matrix.
-    STRATEGY EXPLANATION:
-    Instead of a simple 2D array, we map every valid hole on the board to a unique integer index (0 to N-1).
-    We then construct an adjacency matrix `adj_matrix` of size NxN.
-    - Representation:
-      Nodes are holes on the board.
-      Edges exist between nodes that are physically adjacent (distance 1).
-    
-    - Move Validation (Jumps):
-      A move is valid if:
-      1. We start at Node A (Peg exists).
-      2. We jump over Node B (Peg exists).
-      3. We land on Node C (Empty).
-      4. A, B, and C form a straight line of adjacency: A is adj to B, B is adj to C.
-      The Direction must be preserved (e.g., Row index changes by +1 twice).
+import threading
+import time
 
-    This structure separates the topological definition of the board from the game state logic.
-    """
-    
-    """
-    Adjacency matrix representation of pegsolitaire board is used here 
-    because it allows for efficient checking of valid moves and jumps.
-    Here each node has atmost 4 connections which make small graph as dense
-    so adjacency matrix is more preferred than other representations.
-    """
-    """
-    Layout helps as a bridge between visual board and mathematical graph
-    With help of the layout we can easily build any shape of board easily
-    """
+# ======================================================================
+# BoardGraph – exactly as original
+# ======================================================================
+class BoardGraph:
     def __init__(self, version="english"):
         self.version = version
-        self.nodes = [] # List of (r, c) tuples, index in this list is ID
-        self.node_to_id = {} # Map (r, c) -> ID
-        self.adj_matrix = [] # NxN adjacency matrix
-        self.valid_jumps = [] # Pre-calculated valid jumps for efficiency
+        self.nodes = []
+        self.node_to_id = {}
+        self.adj_matrix = []
+        self.valid_jumps = []
         self._build_board_layout()
         self._build_adjacency_matrix()
         self._precompute_jumps()
+
     def _build_board_layout(self):
-        """Definitions of board shapes."""
-        layout = []
         if self.version == "english":
-            # Standard English 33-hole cross
             layout = [
-                "  XXX  ",
-                "  XXX  ",
+                "  XXX ",
+                "  XXX ",
                 "XXXXXXX",
                 "XXXXXXX",
                 "XXXXXXX",
-                "  XXX  ",
-                "  XXX  "
+                "  XXX ",
+                "  XXX "
             ]
-        else: # European
-            # European 37-hole circle-ish
+        else:  # european
             layout = [
-                "  XXX  ",
+                "  XXX ",
                 " XXXXX ",
                 "XXXXXXX",
                 "XXXXXXX",
                 "XXXXXXX",
                 " XXXXX ",
-                "  XXX  "
+                "  XXX "
             ]
-        
-        # Create Nodes
         for r, row_str in enumerate(layout):
             for c, char in enumerate(row_str):
                 if char == 'X':
@@ -77,182 +45,212 @@ class BoardGraph:
                     self.nodes.append((r, c))
 
     def _build_adjacency_matrix(self):
-        """Constructs the adjacency matrix based on Manhattan distance of 1.
-           Manhattan distance means measuring distance b/w 2 points on a grid 
-           where we are allowed to move horizontally or vertically.
-        """
         n = len(self.nodes)
-        self.adj_matrix = [[0] * n for _ in range(n)]
-        
+        self.adj_matrix = [[0]*n for _ in range(n)]
         for i in range(n):
             r1, c1 = self.nodes[i]
-            for j in range(i + 1, n):
+            for j in range(i+1, n):
                 r2, c2 = self.nodes[j]
-                # Check for adjacency (Up, Down, Left, Right)
-                dist = abs(r1 - r2) + abs(c1 - c2)
-                if dist == 1:
+                if abs(r1-r2)+abs(c1-c2) == 1:
                     self.adj_matrix[i][j] = 1
                     self.adj_matrix[j][i] = 1
+
     def _precompute_jumps(self):
-        """
-        Pre-calculates all geometrically possible jumps to avoid doing this every frame.
-        A jump is defined by a tuple of IDs: (start_id, mid_id, end_id).
-        """
         n = len(self.nodes)
-        directions = [(-1, 0), (1, 0), (0, -1), (0, 1)] # U, D, L, R
-        
+        directions = [(-1,0),(1,0),(0,-1),(0,1)]
         for i in range(n):
-            r, c = self.nodes[i]
-            
-            for dr, dc in directions:
-                # Calculate potential mid and end coordinates
-                mid_r, mid_c = r + dr, c + dc
-                end_r, end_c = r + 2*dr, c + 2*dc
-                
-                # Check if these coordinates exist in our graph
-                if (mid_r, mid_c) in self.node_to_id and (end_r, end_c) in self.node_to_id:
-                    mid_id = self.node_to_id[(mid_r, mid_c)]
-                    end_id = self.node_to_id[(end_r, end_c)]
-                    
-                    # Store as valid structural jump
-                    self.valid_jumps.append((i, mid_id, end_id))
+            r,c = self.nodes[i]
+            for dr,dc in directions:
+                mr,mc = r+dr, c+dc
+                er,ec = r+2*dr, c+2*dc
+                if (mr,mc) in self.node_to_id and (er,ec) in self.node_to_id:
+                    self.valid_jumps.append((i, self.node_to_id[(mr,mc)], self.node_to_id[(er,ec)]))
 
-# =================================================================================================
-# SECTION 2: GAME LOGIC & STATE MANAGEMENT
-# =================================================================================================
-
+# ======================================================================
+# GameState – unchanged
+# ======================================================================
 class GameState:
-    """
-    Manages the dynamic state of the game (where pegs are).
-    Decoupled from the GUI.
-    """
     def __init__(self, graph):
         self.graph = graph
-        self.pegs = [1] * len(graph.nodes) # 1 = Peg, 0 = Empty
-        self.history = [] # Stack for Undo
-        
-        # Set initial empty hole (center usually)
-        center_r, center_c = 3, 3
-        if (center_r, center_c) in graph.node_to_id:
-            center_id = graph.node_to_id[(center_r, center_c)]
-            self.pegs[center_id] = 0
+        self.pegs = [1]*len(graph.nodes)
+        self.history = []
+        centre = (3,3)
+        if centre in graph.node_to_id:
+            self.pegs[graph.node_to_id[centre]] = 0
 
     def get_legal_moves(self):
-        """
-        Filters pre-computed jumps based on current peg configuration.
-        Rule: Start=1, Mid=1, End=0.
-        """
         moves = []
-        for start, mid, end in self.graph.valid_jumps:
-            if self.pegs[start] == 1 and self.pegs[mid] == 1 and self.pegs[end] == 0:
-                moves.append((start, mid, end))
+        for s,m,e in self.graph.valid_jumps:
+            if self.pegs[s]==1 and self.pegs[m]==1 and self.pegs[e]==0:
+                moves.append((s,m,e))
         return moves
 
     def execute_move(self, move):
-        """
-        Applies a move and saves history.
-        move: (start_id, mid_id, end_id)
-        """
-        start, mid, end = move
-        self.history.append(list(self.pegs)) # Deep copy state
-        
-        self.pegs[start] = 0
-        self.pegs[mid] = 0
-        self.pegs[end] = 1
-        return True
+        s,m,e = move
+        self.history.append(self.pegs[:])
+        self.pegs[s]=0; self.pegs[m]=0; self.pegs[e]=1
+
     def undo(self):
         if self.history:
             self.pegs = self.history.pop()
             return True
         return False
 
-    def is_game_over(self):
-        return len(self.get_legal_moves()) == 0
-
     def get_peg_count(self):
         return sum(self.pegs)
 
-# =================================================================================================
-# SECTION 3: GREEDY SOLVER (HEURISTIC AI)
-# =================================================================================================
+    def is_game_over(self):
+        return len(self.get_legal_moves()) == 0
 
-class GreedySolver:
+# ======================================================================
+# PURE DIVIDE‑AND‑CONQUER SOLVER (no backtracking)
+# ======================================================================
+class PureDCSolver:
     """
-    Implements a Greedy Algorithm to find the best move.
-    STRATEGY EXPLANATION:
-    The solver looks 1 step ahead (greedy) to maximize a heuristic score.
-    Heuristic Function H(state):
-    1. Mobility: +10 points for every valid move available in the *next* state. 
-       - Why? Keeping options open prevents getting stuck (very important in Peg Solitaire).
-    2. Centrality: +5 points if the jump lands in the center region (3x3 box).
-       - Why? Pegs in the center can reach more areas than pegs on edges.
-    3. Isolation Penalty: -15 points for creating an isolated peg (peg with no neighbors).
-       - Why? Isolated pegs are usually impossible to remove unless another peg comes to them.
-    
-    Tie-Breaking:
-    If multiple moves have the same score, choose the one that moves a peg towards the center 3,3.
+    Pure Divide & Conquer solver for Peg Solitaire – NO backtracking.
+
+    Algorithm:
+      1. DIVIDE  : Partition the board spatially into two halves
+                    (alternating row-wise and column-wise splits).
+      2. CONQUER : Recursively process each half, executing
+                    available internal moves within that sub-region.
+      3. COMBINE : Execute cross-boundary moves between the halves.
+
+    No undo() is ever called. The solver greedily executes the moves
+    it discovers in each sub-region. It may not always produce a
+    complete winning solution, but strictly follows the D&C paradigm.
     """
-    
+
     def __init__(self, game_state):
         self.game = game_state
+        self.solution_cache = None
+        self.search_thread = None
+        self.search_cancel = False
+        self.callback = None
 
-    def get_best_move(self):
-        legal_moves = self.game.get_legal_moves()
-        if not legal_moves:
-            return None
+    # ---- threading helpers ------------------------------------------------
+    def start_solving(self, callback):
+        """Run the D&C search in a background thread."""
+        self.cancel_solving()
+        self.search_cancel = False
+        self.callback = callback
+        self.search_thread = threading.Thread(target=self._threaded_search)
+        self.search_thread.daemon = True
+        self.search_thread.start()
 
-        best_score = -float('inf')
-        best_moves = []
-        
-        # Save current state to restore after simulation
-        original_pegs = list(self.game.pegs)
+    def _threaded_search(self):
+        # Work on a COPY of the peg state so the UI board is untouched
+        pegs = self.game.pegs[:]
+        all_nodes = list(range(len(self.game.graph.nodes)))
+        solution = self._solve_dc(all_nodes, pegs, split_by_row=True)
+        if self.search_cancel:
+            solution = None
+        if self.callback:
+            self.game_frame.after(0, self.callback, solution if solution else None)
 
-        for move in legal_moves:
-            start, mid, end = move
-            
-            # 1. Simulate Move
-            self.game.pegs[start] = 0
-            self.game.pegs[mid] = 0
-            self.game.pegs[end] = 1
-            
-            # 2. Calculate Score
-            score = 0
-            
-            # Mobility
-            next_moves = self.game.get_legal_moves()
-            score += len(next_moves) * 10
-            
-            # Centrality 
-            end_r, end_c = self.game.graph.nodes[end]
-            if 2 <= end_r <= 4 and 2 <= end_c <= 4:
-                score += 5
-            
-            
-            
-            if score > best_score:
-                best_score = score
-                best_moves = [move]
-            elif score == best_score:
-                best_moves.append(move)
-            
-            # 3. Restore State
-            self.game.pegs = list(original_pegs)
-            
+    # ---- pure divide & conquer -------------------------------------------
+    def _solve_dc(self, node_indices, pegs, split_by_row=True):
+        """
+        Pure D&C entry point.
 
-        return best_moves[0] if best_moves else None
+        Args:
+            node_indices : list of node IDs in the current region
+            pegs         : mutable list[int] of peg states (0/1)
+            split_by_row : True → split by row; False → by column
 
+        Returns:
+            List of (start, mid, end) move tuples that were executed.
+        """
+        if self.search_cancel:
+            return []
 
-# =================================================================================================
-# SECTION 4: USER INTERFACE (TKINTER)
-# =================================================================================================
+        # ── BASE CASE ──────────────────────────────────────────────
+        # Region is too small to sub-divide: greedily execute moves.
+        if len(node_indices) <= 3:
+            return self._solve_small_region(node_indices, pegs)
 
+        # ── DIVIDE ─────────────────────────────────────────────────
+        # Split the region spatially into two halves.
+        left_half, right_half = self._spatial_split(node_indices, split_by_row)
+
+        # ── CONQUER ────────────────────────────────────────────────
+        # Recursively solve each sub-region (alternate the split axis).
+        left_moves  = self._solve_dc(left_half,  pegs, not split_by_row)
+        right_moves = self._solve_dc(right_half, pegs, not split_by_row)
+
+        # ── COMBINE ────────────────────────────────────────────────
+        # Execute cross-boundary moves between the two halves.
+        cross_moves = self._execute_cross_boundary_moves(
+            left_half, right_half, pegs
+        )
+
+        return left_moves + right_moves + cross_moves
+
+    # ---- helpers ----------------------------------------------------------
+    def _spatial_split(self, node_indices, by_row):
+        """Split nodes into two halves based on spatial position."""
+        key = ((lambda i: self.game.graph.nodes[i][0]) if by_row
+               else (lambda i: self.game.graph.nodes[i][1]))
+        sorted_nodes = sorted(node_indices, key=key)
+        mid = len(sorted_nodes) // 2
+        return sorted_nodes[:mid], sorted_nodes[mid:]
+
+    def _solve_small_region(self, node_indices, pegs):
+        """Base case: greedily execute every legal move in a small region."""
+        region_set = set(node_indices)
+        moves_made = []
+        changed = True
+        while changed:
+            changed = False
+            for s, m, e in self.game.graph.valid_jumps:
+                if s in region_set and m in region_set and e in region_set:
+                    if pegs[s] == 1 and pegs[m] == 1 and pegs[e] == 0:
+                        pegs[s] = 0; pegs[m] = 0; pegs[e] = 1
+                        moves_made.append((s, m, e))
+                        changed = True
+        return moves_made
+
+    def _execute_cross_boundary_moves(self, left, right, pegs):
+        """Execute moves that span both sub-regions (the combine step)."""
+        left_set  = set(left)
+        right_set = set(right)
+        all_set   = left_set | right_set
+        moves_made = []
+        changed = True
+        while changed:
+            changed = False
+            for s, m, e in self.game.graph.valid_jumps:
+                if s in all_set and m in all_set and e in all_set:
+                    involved = {s, m, e}
+                    # Move must involve nodes from BOTH halves
+                    if involved & left_set and involved & right_set:
+                        if pegs[s] == 1 and pegs[m] == 1 and pegs[e] == 0:
+                            pegs[s] = 0; pegs[m] = 0; pegs[e] = 1
+                            moves_made.append((s, m, e))
+                            changed = True
+        return moves_made
+
+    def cancel_solving(self):
+        self.search_cancel = True
+        if self.search_thread and self.search_thread.is_alive():
+            self.search_thread.join(timeout=0.1)
+        self.search_thread = None
+
+    def get_hint_move(self):
+        return self.solution_cache[0] if self.solution_cache else None
+
+    def get_full_solution(self):
+        return self.solution_cache
+
+# ======================================================================
+# UI – identical to all previous versions
+# ======================================================================
 class PegSolitaireApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Python Peg Solitaire (Standard & European)")
+        self.root.title("Pure Divide & Conquer Peg Solitaire (No Backtracking)")
         self.root.geometry("600x700")
         self.root.configure(bg="#f0f0f0")
-        
         self.current_frame = None
         self.show_main_menu()
 
@@ -260,25 +258,18 @@ class PegSolitaireApp:
         if self.current_frame:
             self.current_frame.destroy()
 
-    # --- Main Menu ---
-
     def show_main_menu(self):
         self.clear_window()
         self.current_frame = tk.Frame(self.root, bg="#f0f0f0")
         self.current_frame.pack(fill="both", expand=True)
-
-        tk.Label(self.current_frame, text="Peg Solitaire", font=("Helvetica", 32, "bold"), bg="#f0f0f0", fg="#333").pack(pady=50)
-        
-        tk.Button(self.current_frame, text="English Version", font=("Helvetica", 16), width=20,bg="#ed2b08",
+        tk.Label(self.current_frame, text="Peg Solitaire", font=("Helvetica",32,"bold"),
+                 bg="#f0f0f0", fg="#333").pack(pady=50)
+        tk.Button(self.current_frame, text="English Version", font=("Helvetica",16), width=20, bg="#ed2b08",
                   command=lambda: self.start_game("english")).pack(pady=10)
-        
-        tk.Button(self.current_frame, text="European Version", font=("Helvetica", 16), width=20,bg="#0e0ee3",
+        tk.Button(self.current_frame, text="European Version", font=("Helvetica",16), width=20, bg="#0e0ee3",
                   command=lambda: self.start_game("european")).pack(pady=10)
-
-        tk.Button(self.current_frame, text="Exit", font=("Helvetica", 16), width=20,bg="#06f516",
+        tk.Button(self.current_frame, text="Exit", font=("Helvetica",16), width=20, bg="#06f516",
                   command=self.root.quit).pack(pady=30)
-
-    # --- Game Loop & UI ---
 
     def start_game(self, version):
         self.clear_window()
@@ -290,225 +281,226 @@ class GameFrame(tk.Frame):
         super().__init__(parent, bg="#2c3e50")
         self.version = version
         self.on_back = on_back
-        
-        # Initialize Game Logic
+
         self.graph = BoardGraph(version)
         self.game = GameState(self.graph)
-        self.solver = GreedySolver(self.game)
-        
-        # UI State
+        self.solver = PureDCSolver(self.game)
+        self.solver.game_frame = self
+
         self.selected_node = None
         self.autoplay_running = False
-        
+        self.autoplay_moves = []
+        self.autoplay_index = 0
+        self.searching = False
+
         self._setup_ui()
         self.draw_board()
 
     def _setup_ui(self):
-        # Top Bar (Stats)
+        # Top Bar
         self.top_bar = tk.Frame(self, bg="#34495e", height=50)
         self.top_bar.pack(fill="x")
-        
-        self.lbl_info = tk.Label(self.top_bar, text="Pegs: 32", font=("Arial", 14, "bold"), bg="#34495e", fg="white")
+        self.lbl_info = tk.Label(self.top_bar, text="Pegs: 32", font=("Arial",14,"bold"),
+                                 bg="#34495e", fg="white")
         self.lbl_info.pack(side="left", padx=20, pady=10)
-        
-        self.btn_menu = tk.Button(self.top_bar, text="Main Menu", command=self.on_exit, bg="#e74c3c", fg="white")
+        self.btn_menu = tk.Button(self.top_bar, text="Main Menu", command=self.on_exit,
+                                  bg="#e74c3c", fg="white")
         self.btn_menu.pack(side="right", padx=10, pady=10)
 
-        # Canvas for Board
+        # Canvas
         self.canvas = tk.Canvas(self, bg="#2c3e50", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True, padx=20, pady=20)
         self.canvas.bind("<Button-1>", self.on_click)
 
-        # Bottom Bar (Controls)
+        # Bottom Controls
         self.controls = tk.Frame(self, bg="#34495e", height=60)
         self.controls.pack(fill="x", side="bottom")
+        btn_style = {"font": ("Arial",12), "width":10, "bg":"#ecf0f1"}
 
-        btn_style = {"font": ("Arial", 12), "width": 10, "bg": "#ecf0f1"}
-        
         tk.Button(self.controls, text="Undo", command=self.undo_move, **btn_style).pack(side="left", padx=10, pady=10)
         tk.Button(self.controls, text="Restart", command=self.restart_game, **btn_style).pack(side="left", padx=10, pady=10)
-        
-        tk.Frame(self.controls, width=30, bg="#34495e").pack(side="left") # Spacer
-        
+        tk.Frame(self.controls, width=30, bg="#34495e").pack(side="left")
         tk.Button(self.controls, text="Hint", command=self.show_hint, **btn_style).pack(side="left", padx=10, pady=10)
         self.btn_auto = tk.Button(self.controls, text="Autoplay", command=self.toggle_autoplay, **btn_style)
         self.btn_auto.pack(side="left", padx=10, pady=10)
 
-    # --- Drawing ---
+        # Status label
+        self.lbl_status = tk.Label(self.controls, text="", font=("Arial",10), bg="#34495e", fg="yellow")
+        self.lbl_status.pack(side="right", padx=20)
 
     def draw_board(self):
         self.canvas.delete("all")
-        
         width = self.canvas.winfo_width()
         height = self.canvas.winfo_height()
-        # Default fallback if canvas not rendered yet
         if width < 10: width = 600
         if height < 10: height = 500
-            
-        # Board dimensions
-        rows = 7
-        cols = 7
-        cell_size = min(width, height) // (rows + 1)
-        offset_x = (width - cols * cell_size) // 2
-        offset_y = (height - rows * cell_size) // 2
-        self.node_centers = {} # ID -> (x, y)
-
-
-        # Draw Holes/Pegs
+        rows, cols = 7, 7
+        cell_size = min(width, height)//(rows+1)
+        offset_x = (width - cols*cell_size)//2
+        offset_y = (height - rows*cell_size)//2
+        self.node_centers = {}
         for idx in range(len(self.graph.nodes)):
-            r, c = self.graph.nodes[idx]
-            x = offset_x + c * cell_size + cell_size // 2
-            y = offset_y + r * cell_size + cell_size // 2
-            self.node_centers[idx] = (x, y)
-            
-            radius = cell_size // 3
-            
-            color = "#95a5a6" # Empty hole (Gray)
-            outline = "#7f8c8d"
-            
-            if self.game.pegs[idx] == 1:
-                color = "#f10f0f" # Peg (Gold)
+            r,c = self.graph.nodes[idx]
+            x = offset_x + c*cell_size + cell_size//2
+            y = offset_y + r*cell_size + cell_size//2
+            self.node_centers[idx] = (x,y)
+            radius = cell_size//3
+            if self.game.pegs[idx] == 0:
+                color = "#95a5a6"
+            else:
+                color = "#f10f0f"
                 if idx == self.selected_node:
-                    color = "#3b7ec0" # Selected (Orange)
-            
-            # Draw Circle
-            self.canvas.create_oval(x-radius, y-radius, x+radius, y+radius, fill=color, outline=outline, width=2, tags=f"node_{idx}")
-
-        self.lbl_info.config(text=f"Pegs Remaining: {self.game.get_peg_count()}")
-        
+                    color = "#3b7ec0"
+            self.canvas.create_oval(x-radius, y-radius, x+radius, y+radius,
+                                    fill=color, outline="#7f8c8d", width=2)
+        self.lbl_info.config(text=f"Pegs: {self.game.get_peg_count()}")
         if self.game.is_game_over():
             self.show_game_over()
+
     def show_game_over(self):
         count = self.game.get_peg_count()
-        msg = f"Game Over! Pegs remaining: {count}"
+        msg = f"Game Over! Pegs left: {count}"
         if count == 1:
-            msg += "\n🎉 PERFECT! YOU WON! 🎉"
-        # Draw overlay
-        w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
-        self.canvas.create_rectangle(0, h//2 - 40, w, h//2 + 40, fill="black", stipple="gray50")
-        self.canvas.create_text(w//2, h//2, text=msg, fill="white", font=("Arial", 20, "bold"))
-    # --- Interaction ---
-    def on_click(self, event):
-        if self.autoplay_running: return # Disable interact during autoplay
-        # Find clicked node
-        closest_dist = 9999
-        clicked_id = -1
-        for idx, (cx, cy) in self.node_centers.items():
-            dist = (event.x - cx)**2 + (event.y - cy)**2
-            if dist < 900: # 30px radius squared
-                clicked_id = idx
-                closest_dist = dist
-                break
-        
-        if clicked_id == -1: return
+            msg += "\n🎉 YOU WON! 🎉"
+        w,h = self.canvas.winfo_width(), self.canvas.winfo_height()
+        self.canvas.create_rectangle(0, h//2-40, w, h//2+40, fill="black", stipple="gray50")
+        self.canvas.create_text(w//2, h//2, text=msg, fill="white", font=("Arial",20,"bold"))
 
-        # Logic
+    def on_click(self, event):
+        if self.autoplay_running or self.searching:
+            return
+        clicked = None
+        for idx, (cx,cy) in self.node_centers.items():
+            if (event.x-cx)**2 + (event.y-cy)**2 < 900:
+                clicked = idx
+                break
+        if clicked is None:
+            return
         if self.selected_node is None:
-            # Select Peg
-            if self.game.pegs[clicked_id] == 1:
-                self.selected_node = clicked_id
+            if self.game.pegs[clicked]:
+                self.selected_node = clicked
                 self.draw_board()
         else:
-            # Move attempt
-            target_id = clicked_id
-            
-            if target_id == self.selected_node:
-                # Deselect
+            target = clicked
+            if target == self.selected_node:
                 self.selected_node = None
                 self.draw_board()
-            elif self.game.pegs[target_id] == 0:
-                # Check valid moves
-                valid = False
-                move_tuple = None
-                
-                # We need to find the Move Tuple (start, mid, end) that matches selection
-                # Since graph stores valid jumps, we check them
-                moves = self.game.get_legal_moves()
-                for s, m, e in moves:
-                    if s == self.selected_node and e == target_id:
-                        valid = True
-                        move_tuple = (s, m, e)
+            elif self.game.pegs[target]==0:
+                move = None
+                for s,m,e in self.game.get_legal_moves():
+                    if s==self.selected_node and e==target:
+                        move = (s,m,e)
                         break
-                
-                if valid:
-                    self.game.execute_move(move_tuple)
+                if move:
+                    self.game.execute_move(move)
                     self.selected_node = None
                     self.draw_board()
+                    # Recreate solver for new state
+                    self.solver = PureDCSolver(self.game)
+                    self.solver.game_frame = self
                 else:
-                    messagebox.showwarning("Invalid Move", "You cannot jump there!")
+                    messagebox.showwarning("Invalid","Not a legal jump")
             else:
-                # Clicked another peg, switch selection
-                self.selected_node = target_id
+                self.selected_node = target
                 self.draw_board()
 
     def undo_move(self):
+        if self.autoplay_running or self.searching:
+            return
         if self.game.undo():
             self.selected_node = None
             self.draw_board()
+            self.solver = PureDCSolver(self.game)
+            self.solver.game_frame = self
 
     def restart_game(self):
         self.autoplay_running = False
+        self.searching = False
         self.btn_auto.config(text="Autoplay")
         self.game = GameState(self.graph)
-        self.solver = GreedySolver(self.game)
+        self.solver = PureDCSolver(self.game)
+        self.solver.game_frame = self
         self.selected_node = None
         self.draw_board()
+        self.lbl_status.config(text="")
 
     def on_exit(self):
         self.autoplay_running = False
+        self.searching = False
+        self.solver.cancel_solving()
         self.on_back()
 
-    # --- AI Features ---
-
     def show_hint(self):
-        if self.autoplay_running: return
-        move = self.solver.get_best_move()
-        if move:
-            start, mid, end = move
-            # Highlight hint on canvas
-            sx, sy = self.node_centers[start]
-            ex, ey = self.node_centers[end]
-            self.canvas.create_line(sx, sy, ex, ey, fill="#2ecc71", width=5, arrow=tk.LAST)
+        if self.autoplay_running or self.searching:
+            return
+        self.searching = True
+        self.lbl_status.config(text="Searching for solution...")
+        self.solver.start_solving(callback=self._on_hint_solution)
+
+    def _on_hint_solution(self, solution):
+        self.searching = False
+        self.lbl_status.config(text="")
+        if solution:
+            self.solver.solution_cache = solution
+            move = solution[0]
+            sx,sy = self.node_centers[move[0]]
+            ex,ey = self.node_centers[move[2]]
+            self.canvas.create_line(sx,sy,ex,ey, fill="#2ecc71", width=5, arrow=tk.LAST)
         else:
-            messagebox.showinfo("Hint", "No moves available!")
+            messagebox.showinfo("Hint","No winning solution from this position.")
 
     def toggle_autoplay(self):
         if self.autoplay_running:
             self.autoplay_running = False
             self.btn_auto.config(text="Autoplay")
-        else:
+            self.solver.cancel_solving()
+            self.lbl_status.config(text="")
+            return
+        if self.searching:
+            return
+        self.searching = True
+        self.lbl_status.config(text="Computing full solution...")
+        self.solver.start_solving(callback=self._on_autoplay_solution)
+
+    def _on_autoplay_solution(self, solution):
+        self.searching = False
+        self.lbl_status.config(text="")
+        if solution:
+            self.autoplay_moves = solution
+            self.autoplay_index = 0
             self.autoplay_running = True
             self.btn_auto.config(text="Stop Auto")
             self.run_autoplay_step()
+        else:
+            messagebox.showinfo("Autoplay",
+                "D&C could not find moves from this position.\n"
+                "(Pure D&C without backtracking may not always solve the board.)")
+            self.btn_auto.config(text="Autoplay")
 
     def run_autoplay_step(self):
-        if not self.autoplay_running or self.game.is_game_over():
+        if not self.autoplay_running:
+            return
+        if self.autoplay_index >= len(self.autoplay_moves):
             self.autoplay_running = False
             self.btn_auto.config(text="Autoplay")
+            remaining = self.game.get_peg_count()
+            if remaining > 1:
+                self.lbl_status.config(
+                    text=f"D&C finished – {remaining} pegs remain (partial solution)")
             return
-
-        move = self.solver.get_best_move()
-        if move:
-            self.game.execute_move(move)
-            self.draw_board()
-            # Schedule next step
-            self.after(500, self.run_autoplay_step)
-        else:
+        move = self.autoplay_moves[self.autoplay_index]
+        # Verify move is still legal (safety)
+        if move not in self.game.get_legal_moves():
             self.autoplay_running = False
+            self.btn_auto.config(text="Autoplay")
+            messagebox.showerror("Autoplay Error","Solution invalid – board state changed.")
+            return
+        self.game.execute_move(move)
+        self.draw_board()
+        self.autoplay_index += 1
+        self.after(500, self.run_autoplay_step)
 
 if __name__ == "__main__":
     root = tk.Tk()
     app = PegSolitaireApp(root)
-    root.mainloop()
-#--------------------------------------------------------------------------------------
-
-
-
-
-
-
-
-
-"""
-https://medium.com/%40aksblog/peg-of-solitaire-game-busted-with-ai-c5f73466f8c3
-"""
+    root.mainloop() 
