@@ -4,7 +4,7 @@ import threading
 import time
 
 # ======================================================================
-# BoardGraph – exactly as original
+# BoardGraph
 # ======================================================================
 class BoardGraph:
     def __init__(self, version="english"):
@@ -67,7 +67,7 @@ class BoardGraph:
                     self.valid_jumps.append((i, self.node_to_id[(mr,mc)], self.node_to_id[(er,ec)]))
 
 # ======================================================================
-# GameState – unchanged
+# GameState
 # ======================================================================
 class GameState:
     def __init__(self, graph):
@@ -103,7 +103,7 @@ class GameState:
         return len(self.get_legal_moves()) == 0
 
 # ======================================================================
-# QUICKSORT IMPLEMENTATION (in-place)
+# Inplace Quick Sort Implementation
 # ======================================================================
 def quicksort(arr, key=lambda x: x):
     """In-place quicksort with key function support"""
@@ -127,7 +127,7 @@ def quicksort(arr, key=lambda x: x):
     return arr   # for chaining convenience (though we sort in-place)
 
 # ======================================================================
-# PURE DIVIDE‑AND‑CONQUER SOLVER (no backtracking)
+# DAC SOLVER
 # ======================================================================
 class RegionShrinkingDCSolver:
     """
@@ -279,7 +279,7 @@ class RegionShrinkingDCSolver:
                             priority = self._get_move_priority((s, m, e))
                             candidate_moves.append((priority, (s, m, e)))
 
-            # 2. Sort by priority (descending) — replaced with quicksort
+            # 2. Sort by priority (descending)
             quicksort(candidate_moves, key=lambda x: x[0])
             candidate_moves.reverse()   # descending order
 
@@ -315,7 +315,7 @@ class RegionShrinkingDCSolver:
         return self.solution_cache
 
 # ======================================================================
-# UI – ENHANCED VERSION with Modern Design
+# User Interface of this Game
 # ======================================================================
 class PegSolitaireApp:
     def __init__(self, root):
@@ -324,7 +324,6 @@ class PegSolitaireApp:
         self.root.geometry("700x800")
         self.root.configure(bg="#1a2634")
        
-        # Set modern color scheme
         self.colors = {
             'bg': '#1a2634',
             'primary': '#2c3e50',
@@ -861,4 +860,5 @@ class GameFrame(tk.Frame):
 if __name__ == "__main__":
     root = tk.Tk()
     app = PegSolitaireApp(root)
+
     root.mainloop()
