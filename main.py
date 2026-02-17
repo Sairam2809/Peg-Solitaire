@@ -486,7 +486,7 @@ class GameFrame(tk.Frame):
             remaining = self.game.get_peg_count()
             if remaining > 1:
                 self.lbl_status.config(
-                    text=f"D&C finished – {remaining} pegs remain (partial solution)")
+                    text=f"D&C finished – {remaining} pegs remain")
             return
         move = self.autoplay_moves[self.autoplay_index]
         # Verify move is still legal (safety)
