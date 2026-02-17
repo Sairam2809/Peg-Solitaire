@@ -4,7 +4,7 @@ import threading
 import time
 
 # ======================================================================
-# BoardGraph – exactly as original
+# BoardGraph 
 # ======================================================================
 class BoardGraph:
     def __init__(self, version="english"):
@@ -67,7 +67,7 @@ class BoardGraph:
                     self.valid_jumps.append((i, self.node_to_id[(mr,mc)], self.node_to_id[(er,ec)]))
 
 # ======================================================================
-# GameState – unchanged
+# GameState 
 # ======================================================================
 class GameState:
     def __init__(self, graph):
@@ -103,7 +103,7 @@ class GameState:
         return len(self.get_legal_moves()) == 0
 
 # ======================================================================
-# PURE DIVIDE‑AND‑CONQUER SOLVER (no backtracking)
+# DIVIDE‑AND‑CONQUER SOLVER 
 # ======================================================================
 class RegionShrinkingDCSolver:
     """
@@ -153,7 +153,7 @@ class RegionShrinkingDCSolver:
         if self.callback:
             self.game_frame.after(0, self.callback, solution if solution else None)
 
-    # ---- pure divide & conquer -------------------------------------------
+    # ---- divide & conquer -------------------------------------------
     def _solve_dc(self, node_indices, pegs, split_by_row=True):
         """
         Pure D&C entry point.
@@ -299,7 +299,7 @@ class RegionShrinkingDCSolver:
         return self.solution_cache
 
 # ======================================================================
-# UI – identical to all previous versions
+# UI 
 # ======================================================================
 class PegSolitaireApp:
     def __init__(self, root):
