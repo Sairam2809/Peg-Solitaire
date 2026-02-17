@@ -4,7 +4,7 @@ import threading
 import time
 
 # ======================================================================
-# BoardGraph 
+# BoardGraph
 # ======================================================================
 class BoardGraph:
     def __init__(self, version="english"):
