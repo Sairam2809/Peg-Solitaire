@@ -4,7 +4,7 @@ import threading
 import time
 
 # ======================================================================
-# BoardGraph – exactly as original
+# BoardGraph 
 # ======================================================================
 class BoardGraph:
     def __init__(self, version="english"):
@@ -67,7 +67,7 @@ class BoardGraph:
                     self.valid_jumps.append((i, self.node_to_id[(mr,mc)], self.node_to_id[(er,ec)]))
 
 # ======================================================================
-# GameState – unchanged
+# GameState 
 # ======================================================================
 class GameState:
     def __init__(self, graph):
@@ -128,11 +128,11 @@ def quicksort(arr, key=lambda x: x):
     return arr   # for chaining convenience (though we sort in-place)
 
 # ======================================================================
-# PURE DIVIDE‑AND‑CONQUER SOLVER (no backtracking)
+# DIVIDE‑AND‑CONQUER 
 # ======================================================================
 class RegionShrinkingDCSolver:
     """
-    Region Shrinking / Central Expansion Solver (Pure Divide & Conquer).
+    Region Shrinking / Central Expansion Solver (Divide & Conquer).
 
     Strategy:
       - Inherits the Divide & Conquer structure (Spatial Splitting).
@@ -177,10 +177,10 @@ class RegionShrinkingDCSolver:
         if self.callback:
             self.game_frame.after(0, self.callback, solution if solution else None)
 
-    # ---- pure divide & conquer -------------------------------------------
+    # ----  divide & conquer -------------------------------------------
     def _solve_dc(self, node_indices, pegs, split_by_row=True):
         """
-        Pure D&C entry point.
+        D&C entry point.
 
         Args:
             node_indices : list of node IDs in the current region
@@ -405,7 +405,7 @@ class PegSolitaireApp:
         exit_btn.pack(pady=10)
         
         # Footer
-        tk.Label(self.current_frame, text="Pure Divide & Conquer • No Backtracking", 
+        tk.Label(self.current_frame, text="Divide & Conquer • No Backtracking", 
                 font=("Helvetica", 10), bg=self.colors['bg'], fg=self.colors['text']).pack(side="bottom", pady=20)
 
     def start_game(self, version):
@@ -837,7 +837,7 @@ class GameFrame(tk.Frame):
         Progress: {32 - peg_count}/31 moves
 
         🎯 STRATEGY
-        Algorithm: Pure Divide & Conquer
+        Algorithm: Divide & Conquer
         Heuristic: Region Shrinking
         Priority: Remove outer pegs first
 
@@ -852,3 +852,4 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = PegSolitaireApp(root)
     root.mainloop()
+
