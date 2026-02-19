@@ -3,7 +3,7 @@ from tkinter import messagebox, ttk
 import threading
 import time
 
-# ======================================================================
+
 # BoardGraph 
 # ======================================================================
 class BoardGraph:
@@ -852,4 +852,5 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = PegSolitaireApp(root)
     root.mainloop()
+
 
