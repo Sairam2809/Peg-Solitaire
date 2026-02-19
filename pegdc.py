@@ -476,7 +476,7 @@ class GameFrame(tk.Frame):
             self._start_autoplay(solution)
         else:
             self.searching = True
-            self.lbl_status.config(text="Searching for solution...")
+            self.lbl_status.config(text="searching for the solution")
             self.solver.start_solving(callback=self._on_autoplay_solution)
 
     def _on_autoplay_solution(self, solution):
@@ -514,3 +514,4 @@ if __name__ == "__main__":
 
     root.mainloop()
     
+
