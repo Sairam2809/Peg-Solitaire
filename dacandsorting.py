@@ -330,7 +330,7 @@ class RegionShrinkingDCSolver:
 class PegSolitaireApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Peg Solitaire - Region Shrinking Strategy")
+        self.root.title("Peg Solitaire")
         self.root.geometry("800x900")  # Increased window size
         self.root.minsize(700, 800)    # Set minimum window size
         self.root.configure(bg="#1a2634")
@@ -405,7 +405,7 @@ class PegSolitaireApp:
         exit_btn.pack(pady=10)
         
         # Footer
-        tk.Label(self.current_frame, text="Divide & Conquer • No Backtracking", 
+        tk.Label(self.current_frame, text="Divide & Conquer ", 
                 font=("Helvetica", 10), bg=self.colors['bg'], fg=self.colors['text']).pack(side="bottom", pady=20)
 
     def start_game(self, version):
@@ -852,5 +852,6 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = PegSolitaireApp(root)
     root.mainloop()
+
 
 
