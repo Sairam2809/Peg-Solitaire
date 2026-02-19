@@ -325,7 +325,7 @@ class RegionShrinkingDCSolver:
         return self.solution_cache
 
 # ======================================================================
-# UI – FIXED VERSION with Responsive Layout
+# UI 
 # ======================================================================
 class PegSolitaireApp:
     def __init__(self, root):
@@ -369,7 +369,7 @@ class PegSolitaireApp:
         
         tk.Frame(header_frame, height=2, width=400, bg=self.colors['accent1']).pack(pady=20)
         
-        tk.Label(header_frame, text="Region Shrinking Strategy", 
+        tk.Label(header_frame, text="", 
                 font=("Helvetica", 18, "italic"),
                 bg=self.colors['bg'], fg=self.colors['highlight']).pack()
         
@@ -852,6 +852,7 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = PegSolitaireApp(root)
     root.mainloop()
+
 
 
 
