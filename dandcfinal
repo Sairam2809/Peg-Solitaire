@@ -1,0 +1,1001 @@
+import tkinter as tk
+from tkinter import messagebox
+import threading
+from typing import List, Tuple, Optional, Dict, Set, Callable
+from collections import deque
+
+# ======================================================================
+# BoardGraph
+# ======================================================================
+class BoardGraph:
+    def __init__(self, version: str = "english"):
+        self.version = version
+        self.nodes: List[Tuple[int, int]] = []
+        self.node_to_id: Dict[Tuple[int, int], int] = {}
+        self.valid_jumps: List[Tuple[int, int, int]] = []
+        self._build_board_layout()
+        self._precompute_jumps()
+
+    def _build_board_layout(self) -> None:
+        if self.version == "english":
+            layout = [
+                "  XXX  ",
+                "  XXX  ",
+                "XXXXXXX",
+                "XXXXXXX",
+                "XXXXXXX",
+                "  XXX  ",
+                "  XXX  "
+            ]
+        else:
+            layout = [
+                "  XXX  ",
+                " XXXXX ",
+                "XXXXXXX",
+                "XXXXXXX",
+                "XXXXXXX",
+                " XXXXX ",
+                "  XXX  "
+            ]
+        for r, row_str in enumerate(layout):
+            for c, char in enumerate(row_str):
+                if char == 'X':
+                    self.node_to_id[(r, c)] = len(self.nodes)
+                    self.nodes.append((r, c))
+
+    def _precompute_jumps(self) -> None:
+        for i in range(len(self.nodes)):
+            r, c = self.nodes[i]
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                mr, mc = r + dr, c + dc
+                er, ec = r + 2 * dr, c + 2 * dc
+                if (mr, mc) in self.node_to_id and (er, ec) in self.node_to_id:
+                    self.valid_jumps.append(
+                        (i, self.node_to_id[(mr, mc)], self.node_to_id[(er, ec)])
+                    )
+
+
+# ======================================================================
+# GameState
+# ======================================================================
+class GameState:
+    def __init__(self, graph: BoardGraph):
+        self.graph = graph
+        self.pegs: List[int] = [1] * len(graph.nodes)
+        self.history: List[List[int]] = []
+        self._legal_moves_cache: Optional[List[Tuple[int, int, int]]] = None
+        self._cache_valid: bool = False
+        centre = (3, 3)
+        if centre in graph.node_to_id:
+            self.pegs[graph.node_to_id[centre]] = 0
+
+    def get_legal_moves(self) -> List[Tuple[int, int, int]]:
+        if not self._cache_valid:
+            self._legal_moves_cache = [
+                (s, m, e) for s, m, e in self.graph.valid_jumps
+                if self.pegs[s] == 1 and self.pegs[m] == 1 and self.pegs[e] == 0
+            ]
+            self._cache_valid = True
+        return self._legal_moves_cache
+
+    def is_valid_move(self, move: Tuple[int, int, int]) -> bool:
+        s, m, e = move
+        return (0 <= s < len(self.pegs) and
+                0 <= m < len(self.pegs) and
+                0 <= e < len(self.pegs) and
+                self.pegs[s] == 1 and self.pegs[m] == 1 and self.pegs[e] == 0)
+
+    def execute_move(self, move: Tuple[int, int, int]) -> None:
+        s, m, e = move
+        self.history.append(self.pegs[:])
+        self.pegs[s] = 0
+        self.pegs[m] = 0
+        self.pegs[e] = 1
+        self._cache_valid = False
+
+    def undo(self) -> bool:
+        if self.history:
+            self.pegs = self.history.pop()
+            self._cache_valid = False
+            return True
+        return False
+
+    def get_peg_count(self) -> int:
+        return sum(self.pegs)
+
+    def is_game_over(self) -> bool:
+        return len(self.get_legal_moves()) == 0
+
+
+# ======================================================================
+# DivideAndConquerSolver
+# ======================================================================
+class DivideAndConquerSolver:
+    """
+    Divide and Conquer Solver for Peg Solitaire.
+    DIVIDE  — Partition active pegs into independent clusters using an
+              interaction graph (Manhattan distance <= 2). Repeated
+              recursively at every level of the call tree.
+    CONQUER — Base case : 0-1 pegs in cluster -> already solved.
+              Small: exhaustive DFS on sub-board.
+              Large: BFS reduction to shrink cluster, then RECURSE on
+              the strictly-smaller result (guarantees termination).
+    COMBINE — Ordered move sequences from disjoint sub-problems are
+              concatenated into one valid global sequence.
+    """
+    SMALL_THRESHOLD = 10
+    MAX_DFS_STATES  = 80_000
+    MAX_BFS_STATES  = 15_000
+    def __init__(self, game_state: GameState):
+        self.game = game_state
+        self.solution_cache: Optional[List[Tuple[int, int, int]]] = None
+        self.search_thread: Optional[threading.Thread] = None
+        self.search_cancel: bool = False
+        self.callback: Optional[Callable] = None
+        self.game_frame = None
+        self.progress_callback: Optional[Callable[[str], None]] = None
+        # Key = full board tuple; value = move list from that state
+        self.transposition_table: Dict[tuple, List[Tuple[int, int, int]]] = {}
+        self._dc_call_count: int = 0
+    def start_solving(self, callback: Callable,
+                      progress_callback: Optional[Callable[[str], None]] = None) -> None:
+        self.cancel_solving()
+        self.search_cancel = False
+        self.callback = callback
+        self.progress_callback = progress_callback
+        self.search_thread = threading.Thread(
+            target=self._threaded_search, daemon=True)
+        self.search_thread.start()
+    def cancel_solving(self) -> None:
+        self.search_cancel = True
+        if self.search_thread and self.search_thread.is_alive():
+            self.search_thread.join(timeout=0.5)
+        self.search_thread = None
+        self.search_cancel = False
+    # ------------------------------------------------------------------ #
+    #  DIVIDE
+    # ------------------------------------------------------------------ #
+    def _divide(self, pegs: List[int]) -> List[Set[int]]:
+        active = {i for i, p in enumerate(pegs) if p == 1}
+        if not active:
+            return []
+        clusters: List[Set[int]] = []
+        visited: Set[int] = set()
+        for seed in sorted(active):
+            if seed in visited:
+                continue
+            cluster: Set[int] = set()
+            q = deque([seed])
+            visited.add(seed)
+            while q:
+                node = q.popleft()
+                cluster.add(node)
+                r1, c1 = self.game.graph.nodes[node]
+                for other in active:
+                    if other not in visited:
+                        r2, c2 = self.game.graph.nodes[other]
+                        if abs(r1 - r2) + abs(c1 - c2) <= 2:
+                            visited.add(other)
+                            q.append(other)
+            clusters.append(cluster)
+        return clusters
+    # ------------------------------------------------------------------ #
+    #  CONQUER
+    # ------------------------------------------------------------------ #
+    def _conquer(self, pegs: List[int], cluster: Set[int],
+                 depth: int = 0) -> List[Tuple[int, int, int]]:
+        self._dc_call_count += 1
+        if self.search_cancel:
+            return []
+        # BASE CASE: cluster already solved
+        cluster_pegs = sum(pegs[i] for i in cluster)
+        if cluster_pegs <= 1:
+            return []
+        # RE-DIVIDE the sub-problem (recursive D&C split)
+        sub_pegs = [pegs[i] if i in cluster else 0
+                    for i in range(len(pegs))]
+        sub_clusters = self._divide(sub_pegs)
+        if len(sub_clusters) > 1:
+            if self.progress_callback:
+                self.progress_callback(
+                    f"D&C depth {depth}: split into {len(sub_clusters)} sub-problems")
+            combined: List[Tuple[int, int, int]] = []
+            current = list(pegs)
+            for sc in sub_clusters:
+                if self.search_cancel:
+                    break
+                partial = self._conquer(current, sc, depth + 1)   # RECURSE
+                for s, m, e in partial:
+                    current[s] = 0; current[m] = 0; current[e] = 1
+                combined.extend(partial)                           # COMBINE
+            return combined
+        if cluster_pegs <= self.SMALL_THRESHOLD:
+            result = self._conquer_small(pegs, cluster)
+        else:
+            result = self._conquer_large(pegs, cluster, depth)
+        return result if result is not None else []
+    # ------------------------------------------------------------------ #
+    #  CONQUER small — exhaustive DFS
+    # ------------------------------------------------------------------ #
+    def _conquer_small(self, pegs: List[int],
+                       cluster: Set[int]) -> List[Tuple[int, int, int]]:
+        start_key = tuple(pegs)
+        if start_key in self.transposition_table:
+            return list(self.transposition_table[start_key])
+        
+        best: List[Optional[List]] = [None]
+        budget = [0]
+
+        def dfs(current: List[int], path: List[Tuple[int, int, int]]) -> None:
+            if self.search_cancel or budget[0] > self.MAX_DFS_STATES:
+                return
+            budget[0] += 1
+
+            count = sum(current[i] for i in cluster)
+            if count <= 1:
+                if best[0] is None or len(path) < len(best[0]):
+                    best[0] = path[:]
+                return
+            # Prune paths longer than current best
+            if best[0] is not None and len(path) >= len(best[0]):
+                return
+            for s, m, e in self.game.graph.valid_jumps:
+                if s not in cluster and e not in cluster:
+                    continue
+                if current[s] == 1 and current[m] == 1 and current[e] == 0:
+                    current[s] = 0; current[m] = 0; current[e] = 1
+                    path.append((s, m, e))
+                    dfs(current, path)
+                    path.pop()
+                    current[s] = 1; current[m] = 1; current[e] = 0
+        dfs(list(pegs), [])
+        result = best[0] if best[0] is not None else []
+        self.transposition_table[start_key] = result
+        return result
+    # ------------------------------------------------------------------ #
+    #  CONQUER large — BFS reduction then recurse
+    # ------------------------------------------------------------------ #
+    def _conquer_large(self, pegs: List[int], cluster: Set[int],
+                       depth: int) -> List[Tuple[int, int, int]]:
+        if self.progress_callback:
+            self.progress_callback(
+                f"D&C depth {depth}: BFS on large cluster "
+                f"({sum(pegs[i] for i in cluster)} pegs)")
+        queue: deque = deque([(list(pegs), [])])
+        visited: Set[tuple] = {tuple(pegs[i] for i in sorted(cluster))}
+        best_pegs  = list(pegs)
+        best_path: List[Tuple[int, int, int]] = []
+        min_count  = sum(pegs[i] for i in cluster)
+        states     = 0
+        while queue and not self.search_cancel and states < self.MAX_BFS_STATES:
+            state, path = queue.popleft()
+            states += 1
+            count = sum(state[i] for i in cluster)
+            if count < min_count:
+                min_count = count
+                best_pegs = list(state)
+                best_path = list(path)
+                if min_count <= 1:
+                    break
+            for s, m, e in self.game.graph.valid_jumps:
+                if s not in cluster and e not in cluster:
+                    continue
+                if state[s] == 1 and state[m] == 1 and state[e] == 0:
+                    nxt = list(state)
+                    nxt[s] = 0; nxt[m] = 0; nxt[e] = 1
+                    key = tuple(nxt[i] for i in sorted(cluster))
+                    if key not in visited:
+                        visited.add(key)
+                        queue.append((nxt, path + [(s, m, e)]))
+        # Whether or not BFS made progress, always recurse on best state found
+        recurse_pegs = best_pegs
+        combined     = list(best_path)
+        current      = list(recurse_pegs)
+        reduced = self._divide(recurse_pegs)
+        for sc in reduced:
+            if self.search_cancel:
+                break
+            sub_count  = sum(recurse_pegs[i] for i in sc)
+            orig_count = sum(pegs[i] for i in cluster)
+            # Avoid infinite recursion: only recurse if sub-problem is smaller
+            if sub_count >= orig_count and depth > 0:
+                continue
+            partial = self._conquer(current, sc, depth + 1)
+            for s, m, e in partial:
+                current[s] = 0; current[m] = 0; current[e] = 1
+            combined.extend(partial)
+        return combined
+    # ------------------------------------------------------------------ #
+    #  COMBINE
+    # ------------------------------------------------------------------ #
+    def _combine(self,
+                 cluster_solutions: List[List[Tuple[int, int, int]]]) \
+            -> List[Tuple[int, int, int]]:
+        """
+        COMBINE step.
+        Disjoint cluster solutions are serialised in order — no move
+        from cluster A can conflict with a move from cluster B because
+        they operate on non-overlapping peg sets by construction.
+        """
+        result: List[Tuple[int, int, int]] = []
+        for sol in cluster_solutions:
+            result.extend(sol)
+        return result
+    def _solve(self, initial_pegs: List[int]) \
+            -> Optional[List[Tuple[int, int, int]]]:
+        """
+        Iterative outer loop driving the D&C pipeline:
+            DIVIDE -> CONQUER (recursive) -> COMBINE
+        Repeats until the board is solved or genuinely stuck.
+        """
+        self._dc_call_count = 0
+        self.transposition_table.clear()
+        current_pegs   = list(initial_pegs)
+        full_solution: List[Tuple[int, int, int]] = []
+        iteration      = 0
+        prev_peg_count = sum(current_pegs) + 1  # sentinel
+        while not self.search_cancel:
+            peg_count = sum(current_pegs)
+            if peg_count <= 1:
+                break
+            # Genuinely stuck: no legal moves anywhere on the board
+            has_move = any(
+                current_pegs[s] == 1 and current_pegs[m] == 1
+                and current_pegs[e] == 0
+                for s, m, e in self.game.graph.valid_jumps
+            )
+            if not has_move:
+                break
+            # Two iterations with zero progress -> truly stuck
+            if peg_count >= prev_peg_count and iteration > 0:
+                break
+            prev_peg_count = peg_count
+            # ── DIVIDE ────────────────────────────────────────────────
+            clusters = self._divide(current_pegs)
+
+            if not clusters:
+                break
+            if self.progress_callback:
+                self.progress_callback(
+                    f"Iter {iteration}: DIVIDE -> {len(clusters)} cluster(s), "
+                    f"{peg_count} pegs")
+            # ── CONQUER ───────────────────────────────────────────────
+            cluster_solutions: List[List[Tuple[int, int, int]]] = []
+            for idx, cluster in enumerate(clusters):
+                if self.search_cancel:
+                    break
+                if self.progress_callback:
+                    self.progress_callback(
+                        f"CONQUER {idx+1}/{len(clusters)} "
+                        f"({sum(current_pegs[i] for i in cluster)} pegs)")
+                partial = self._conquer(current_pegs, cluster, depth=0)
+                # Apply moves so later clusters see the updated board
+                for s, m, e in partial:
+                    current_pegs[s] = 0
+                    current_pegs[m] = 0
+                    current_pegs[e] = 1
+                if partial:
+                    cluster_solutions.append(partial)
+            # ── COMBINE ───────────────────────────────────────────────
+            iter_moves = self._combine(cluster_solutions)
+            full_solution.extend(iter_moves)
+            if self.progress_callback:
+                self.progress_callback(
+                    f"COMBINE: +{len(iter_moves)} moves | "
+                    f"{sum(current_pegs)} pegs | "
+                    f"D&C calls={self._dc_call_count}")
+
+            iteration += 1
+
+        return full_solution if full_solution else None
+
+    # ------------------------------------------------------------------ #
+    #  Threading
+    # ------------------------------------------------------------------ #
+    def _threaded_search(self) -> None:
+        try:
+            solution = self._solve(self.game.pegs[:])
+            if self.search_cancel:
+                solution = None
+            if self.callback and self.game_frame:
+                self.game_frame.after(0, self.callback, solution)
+        except Exception as e:
+            err = str(e)
+            if self.game_frame:
+                self.game_frame.after(
+                    0, lambda: self.game_frame.lbl_status.config(
+                        text=f"Solver error: {err}"))
+
+
+# ======================================================================
+# GameFrame
+# ======================================================================
+class GameFrame(tk.Frame):
+    def __init__(self, parent, version: str, on_back: Callable, colors: Dict):
+        super().__init__(parent, bg=colors['bg'])
+        self.version = version
+        self.on_back = on_back
+        self.colors  = colors
+
+        self.graph  = BoardGraph(version)
+        self.game   = GameState(self.graph)
+        self.solver = DivideAndConquerSolver(self.game)
+        self.solver.game_frame = self
+
+        self.selected_node:    Optional[int]              = None
+        self.autoplay_running: bool                       = False
+        self.autoplay_moves:   List[Tuple[int, int, int]] = []
+        self.autoplay_index:   int                        = 0
+        self.searching:        bool                       = False
+        self.hint_items:       List[int]                  = []
+        self.node_centers:     Dict[int, Tuple[int, int]] = {}
+
+        self.grid_rowconfigure(0, weight=0)
+        self.grid_rowconfigure(1, weight=1)
+        self.grid_rowconfigure(2, weight=0)
+        self.grid_rowconfigure(3, weight=0)
+        self.grid_rowconfigure(4, weight=0)
+        self.grid_columnconfigure(0, weight=1)
+
+        self._setup_ui()
+        self.draw_board()
+
+    # ------------------------------------------------------------------ #
+    #  UI
+    # ------------------------------------------------------------------ #
+    def _setup_ui(self) -> None:
+        # Top bar
+        top = tk.Frame(self, bg=self.colors['primary'], height=60)
+        top.grid(row=0, column=0, sticky="ew")
+        top.grid_propagate(False)
+
+        info_f = tk.Frame(top, bg=self.colors['primary'])
+        info_f.pack(side="left", padx=15, pady=10)
+
+        self.lbl_info = tk.Label(
+            info_f, text=f"PEGS: {self.game.get_peg_count()}",
+            font=("Arial", 14, "bold"),
+            bg=self.colors['primary'], fg=self.colors['text'])
+        self.lbl_info.pack(side="left")
+
+        tk.Frame(info_f, width=15, bg=self.colors['primary']).pack(side="left")
+        ver_text = "ENGLISH" if self.version == "english" else "EUROPEAN"
+        tk.Label(info_f, text=ver_text, font=("Arial", 11),
+                 bg=self.colors['primary'],
+                 fg=self.colors['highlight']).pack(side="left")
+
+        tk.Button(top, text="MAIN MENU", command=self.on_exit,
+                  bg=self.colors['accent1'], fg="white",
+                  activebackground="#c0392b", activeforeground="white",
+                  font=("Arial", 11, "bold"), bd=0, cursor="hand2"
+                  ).pack(side="right", padx=15, pady=10)
+
+        # Canvas
+        canvas_wrap = tk.Frame(self, bg=self.colors['secondary'],
+                               bd=2, relief="sunken")
+        canvas_wrap.grid(row=1, column=0, sticky="nsew", padx=20, pady=10)
+        canvas_wrap.grid_rowconfigure(0, weight=1)
+        canvas_wrap.grid_columnconfigure(0, weight=1)
+
+        self.canvas = tk.Canvas(canvas_wrap, bg=self.colors['bg'],
+                                highlightthickness=0)
+        self.canvas.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
+        self.canvas.bind("<Button-1>", self.on_click)
+        self.canvas.bind("<Configure>", lambda e: self.draw_board())
+
+        # Info strip
+        strip = tk.Frame(self, bg=self.colors['secondary'], height=35)
+        strip.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 5))
+        strip.grid_propagate(False)
+
+        tk.Label(strip,
+                 text="Divide and Conquer  |  DIVIDE \u2192 CONQUER \u2192 COMBINE",
+                 font=("Arial", 10),
+                 bg=self.colors['secondary'],
+                 fg=self.colors['text']).pack(side="left", padx=10, pady=5)
+
+        self.progress_label = tk.Label(
+            strip, text=f"{self.game.get_peg_count()} pegs",
+            font=("Arial", 10, "bold"),
+            bg=self.colors['secondary'], fg=self.colors['highlight'])
+        self.progress_label.pack(side="right", padx=10, pady=5)
+
+        # Control buttons (mouse only — no keyboard bindings)
+        ctrl = tk.Frame(self, bg=self.colors['primary'], height=70)
+        ctrl.grid(row=3, column=0, sticky="ew")
+        ctrl.grid_propagate(False)
+
+        btn_row = tk.Frame(ctrl, bg=self.colors['primary'])
+        btn_row.pack(expand=True, fill="both", pady=5)
+
+        bstyle = dict(font=("Arial", 10, "bold"), width=9, height=1,
+                      bd=0, cursor="hand2", fg="white")
+
+        tk.Button(btn_row, text="UNDO",
+                  bg=self.colors['accent2'], activebackground="#2980b9",
+                  command=self.undo_move, **bstyle
+                  ).pack(side="left", padx=3, expand=True)
+
+        tk.Button(btn_row, text="RESTART",
+                  bg=self.colors['accent3'], activebackground="#27ae60",
+                  command=self.restart_game, **bstyle
+                  ).pack(side="left", padx=3, expand=True)
+
+        self.btn_auto = tk.Button(
+            btn_row, text="AUTO PLAY",
+            bg=self.colors['accent1'], activebackground="#c0392b",
+            command=self.toggle_autoplay, **bstyle)
+        self.btn_auto.pack(side="left", padx=3, expand=True)
+
+        tk.Button(btn_row, text="HINT",
+                  bg=self.colors['highlight'], activebackground="#f39c12",
+                  command=self.show_hint, **bstyle
+                  ).pack(side="left", padx=3, expand=True)
+
+        tk.Button(btn_row, text="ANALYZE",
+                  bg="#9b59b6", activebackground="#8e44ad",
+                  command=self.analyze_position, **bstyle
+                  ).pack(side="left", padx=3, expand=True)
+
+        tk.Button(btn_row, text="STATS",
+                  bg="#1abc9c", activebackground="#16a085",
+                  command=self.show_stats, **bstyle
+                  ).pack(side="left", padx=3, expand=True)
+
+        # Status bar
+        self.status_bar = tk.Frame(self, bg=self.colors['secondary'], height=25)
+        self.status_bar.grid(row=4, column=0, sticky="ew")
+        self.status_bar.grid_propagate(False)
+
+        self.lbl_status = tk.Label(
+            self.status_bar,
+            text="Ready  |  Click a peg to select, then click a destination hole",
+            font=("Arial", 9),
+            bg=self.colors['secondary'], fg=self.colors['text'])
+        self.lbl_status.pack(side="left", padx=10, pady=2)
+
+    # ------------------------------------------------------------------ #
+    #  Drawing
+    # ------------------------------------------------------------------ #
+    def draw_board(self) -> None:
+        self.canvas.delete("all")
+        W = self.canvas.winfo_width()
+        H = self.canvas.winfo_height()
+        if W < 100 or H < 100:
+            return
+
+        rows = cols = 7
+        cell = min((W - 40) // (cols + 1), (H - 40) // (rows + 1))
+        cell = max(cell, 30)
+        ox   = (W - cols * cell) // 2
+        oy   = (H - rows * cell) // 2
+
+        for i in range(rows + 1):
+            y = oy + i * cell
+            self.canvas.create_line(ox, y, ox + cols * cell, y,
+                                    fill=self.colors['secondary'],
+                                    width=1, dash=(2, 4))
+        for i in range(cols + 1):
+            x = ox + i * cell
+            self.canvas.create_line(x, oy, x, oy + rows * cell,
+                                    fill=self.colors['secondary'],
+                                    width=1, dash=(2, 4))
+
+        self.node_centers.clear()
+        for idx in range(len(self.graph.nodes)):
+            r, c = self.graph.nodes[idx]
+            x    = ox + c * cell + cell // 2
+            y    = oy + r * cell + cell // 2
+            self.node_centers[idx] = (x, y)
+            rad  = max(cell // 3, 10)
+
+            if self.game.pegs[idx] == 0:
+                self.canvas.create_oval(
+                    x-rad, y-rad, x+rad, y+rad,
+                    fill=self.colors['secondary'],
+                    outline=self.colors['text'], width=2)
+            else:
+                color = (self.colors['highlight']
+                         if idx == self.selected_node
+                         else self.colors['accent1'])
+                if idx == self.selected_node:
+                    self.canvas.create_oval(
+                        x-rad-4, y-rad-4, x+rad+4, y+rad+4,
+                        fill="", outline=color, width=2, dash=(2, 2))
+                self.canvas.create_oval(
+                    x-rad, y-rad, x+rad, y+rad,
+                    fill=color, outline="white", width=2)
+
+        self.lbl_info.config(text=f"PEGS: {self.game.get_peg_count()}")
+        self.progress_label.config(text=f"{self.game.get_peg_count()} pegs")
+
+        if self.game.is_game_over():
+            self._draw_game_over()
+
+    def _draw_game_over(self) -> None:
+        count = self.game.get_peg_count()
+        if count == 1:
+            msg   = "\U0001f389 PERFECT VICTORY! \U0001f389"
+            sub   = "Divide and Conquer solved it!"
+            color = self.colors['accent3']
+        else:
+            msg   = "GAME OVER"
+            sub   = f"{count} pegs remaining"
+            color = self.colors['accent1']
+        W = self.canvas.winfo_width()
+        H = self.canvas.winfo_height()
+        self.canvas.create_rectangle(0, H//2 - 55, W, H//2 + 55,
+                                     fill="#000000", stipple="gray50")
+        self.canvas.create_text(W//2, H//2 - 15, text=msg,
+                                fill=color, font=("Arial", 24, "bold"))
+        self.canvas.create_text(W//2, H//2 + 20, text=sub,
+                                fill="white", font=("Arial", 16))
+    # ------------------------------------------------------------------ #
+    #  Click handling
+    # ------------------------------------------------------------------ #
+    def on_click(self, event) -> None:
+        if self.autoplay_running or self.searching:
+            self.lbl_status.config(text="Please wait\u2026")
+            return
+
+        clicked = None
+        for idx, (cx, cy) in self.node_centers.items():
+            if (event.x - cx) ** 2 + (event.y - cy) ** 2 < 900:
+                clicked = idx
+                break
+
+        if clicked is None:
+            return
+
+        if self.selected_node is None:
+            if self.game.pegs[clicked]:
+                self.selected_node = clicked
+                self.lbl_status.config(
+                    text="Peg selected \u2014 click a destination hole")
+                self.draw_board()
+        else:
+            if clicked == self.selected_node:
+                self.selected_node = None
+                self.lbl_status.config(text="Selection cleared")
+                self.draw_board()
+            elif self.game.pegs[clicked] == 0:
+                move = next(
+                    ((s, m, e) for s, m, e in self.game.get_legal_moves()
+                     if s == self.selected_node and e == clicked), None)
+                if move:
+                    self.game.execute_move(move)
+                    self.selected_node = None
+                    self._rebuild_solver()
+                    self.draw_board()
+                    self.lbl_status.config(
+                        text=f"Move done \u2014 {self.game.get_peg_count()} pegs left")
+                else:
+                    self.lbl_status.config(
+                        text="Cannot jump there \u2014 try another hole")
+                    self.selected_node = None
+                    self.draw_board()
+            else:
+                self.selected_node = clicked
+                self.lbl_status.config(
+                    text="Peg selected \u2014 click a destination hole")
+                self.draw_board()
+    # ------------------------------------------------------------------ #
+    #  Game actions
+    # ------------------------------------------------------------------ #
+    def _rebuild_solver(self) -> None:
+        self.solver = DivideAndConquerSolver(self.game)
+        self.solver.game_frame = self
+
+    def undo_move(self) -> None:
+        if self.autoplay_running or self.searching:
+            return
+        if self.game.undo():
+            self.selected_node = None
+            self._rebuild_solver()
+            self.draw_board()
+            self.lbl_status.config(
+                text=f"Undone \u2014 {self.game.get_peg_count()} pegs")
+        else:
+            self.lbl_status.config(text="Nothing to undo")
+
+    def restart_game(self) -> None:
+        if self.searching:
+            self.solver.cancel_solving()
+        self.autoplay_running = False
+        self.autoplay_moves   = []
+        self.autoplay_index   = 0
+        self.searching        = False
+        self.btn_auto.config(text="AUTO PLAY")
+        self.game = GameState(self.graph)
+        self._rebuild_solver()
+        self.selected_node = None
+        self.draw_board()
+        self.lbl_status.config(text="Restarted \u2014 click a peg to begin")
+
+    def on_exit(self) -> None:
+        self.autoplay_running = False
+        self.searching        = False
+        self.solver.cancel_solving()
+        self.on_back()
+
+    # ------------------------------------------------------------------ #
+    #  Hint
+    # ------------------------------------------------------------------ #
+    def show_hint(self) -> None:
+        if self.autoplay_running or self.searching:
+            return
+        self._clear_hints()
+        self.searching = True
+        self.lbl_status.config(text="Computing hint\u2026")
+        self.solver.start_solving(
+            callback=self._on_hint_done,
+            progress_callback=lambda m: self.lbl_status.config(text=m))
+
+    def _on_hint_done(self, solution) -> None:
+        self.searching = False
+        if solution:
+            self.solver.solution_cache = solution
+            move = solution[0]
+            if self.game.is_valid_move(move):
+                sx, sy = self.node_centers[move[0]]
+                ex, ey = self.node_centers[move[2]]
+                self._clear_hints()
+                r = max(self.canvas.winfo_width(),
+                        self.canvas.winfo_height()) // 20
+                self.hint_items.append(self.canvas.create_oval(
+                    sx-r-4, sy-r-4, sx+r+4, sy+r+4,
+                    outline=self.colors['accent3'], width=3, fill=""))
+                self.hint_items.append(self.canvas.create_line(
+                    sx, sy, ex, ey,
+                    fill=self.colors['accent3'], width=4,
+                    arrow=tk.LAST, arrowshape=(12, 16, 6), dash=(6, 3)))
+                self.lbl_status.config(
+                    text=f"Hint: peg {move[0]} \u2192 hole {move[2]}")
+                self.after(3000, self._clear_hints)
+            else:
+                self.lbl_status.config(text="Hint move no longer valid")
+        else:
+            self.lbl_status.config(text="No hint available")
+    def _clear_hints(self) -> None:
+        for item in self.hint_items:
+            try:
+                self.canvas.delete(item)
+            except Exception:
+                pass
+        self.hint_items = []
+    # ------------------------------------------------------------------ #
+    #  Autoplay
+    # ------------------------------------------------------------------ #
+    def toggle_autoplay(self) -> None:
+        if self.autoplay_running:
+            self.autoplay_running = False
+            self.btn_auto.config(text="AUTO PLAY")
+            self.solver.cancel_solving()
+            self.lbl_status.config(text="Autoplay stopped")
+            return
+        if self.searching:
+            return
+        self._start_autoplay()
+    def _start_autoplay(self) -> None:
+        self.searching = True
+        self.lbl_status.config(text="D&C solver running\u2026")
+        self._rebuild_solver()
+        self.solver.start_solving(
+            callback=self._on_autoplay_ready,
+            progress_callback=lambda m: self.lbl_status.config(text=m))
+    def _on_autoplay_ready(self, solution) -> None:
+        self.searching = False
+        if solution:
+            valid = self._validate_solution(solution)
+            if valid:
+                self.autoplay_moves   = valid
+                self.autoplay_index   = 0
+                self.autoplay_running = True
+                self.btn_auto.config(text="STOP")
+                self.lbl_status.config(
+                    text=f"Playing {len(valid)} moves\u2026")
+                self._run_step()
+                return
+        rem = self.game.get_peg_count()
+        self.autoplay_running = False
+        self.btn_auto.config(text="AUTO PLAY")
+        if self.game.is_game_over():
+            self.lbl_status.config(text=f"Game over \u2014 {rem} pegs remain")
+        else:
+            self.lbl_status.config(
+                text="Solver could not find further moves from this position")
+
+    def _validate_solution(
+            self, moves: List[Tuple[int, int, int]]
+    ) -> List[Tuple[int, int, int]]:
+        """
+        Simulate the full move list on a copy of the board.
+        Return the valid prefix (up to but not including the first
+        illegal move).  Prevents autoplay from halting mid-game on a
+        stale cached plan.
+        """
+        sim = list(self.game.pegs)
+        valid: List[Tuple[int, int, int]] = []
+        for s, m, e in moves:
+            if sim[s] == 1 and sim[m] == 1 and sim[e] == 0:
+                sim[s] = 0; sim[m] = 0; sim[e] = 1
+                valid.append((s, m, e))
+            else:
+                break
+        return valid
+
+    def _run_step(self) -> None:
+        if not self.autoplay_running:
+            return
+
+        if self.autoplay_index >= len(self.autoplay_moves):
+            if not self.game.is_game_over():
+                self.lbl_status.config(text="Re-computing\u2026")
+                self._start_autoplay()
+            else:
+                self.autoplay_running = False
+                self.btn_auto.config(text="AUTO PLAY")
+                rem = self.game.get_peg_count()
+                self.lbl_status.config(
+                    text=f"Complete \u2014 {rem} peg"
+                         f"{'s' if rem != 1 else ''} remaining")
+            return
+
+        move = self.autoplay_moves[self.autoplay_index]
+        if not self.game.is_valid_move(move):
+            self.autoplay_running = False
+            self.btn_auto.config(text="AUTO PLAY")
+            self.lbl_status.config(
+                text="Plan desynced \u2014 press AUTO PLAY to re-compute")
+            return
+
+        self.game.execute_move(move)
+        self.draw_board()
+        done  = self.autoplay_index + 1
+        total = len(self.autoplay_moves)
+        self.lbl_status.config(
+            text=f"Move {done}/{total}  |  {self.game.get_peg_count()} pegs left")
+        self.autoplay_index += 1
+        self.after(450, self._run_step)
+
+    # ------------------------------------------------------------------ #
+    #  Analysis / Stats
+    # ------------------------------------------------------------------ #
+    def analyze_position(self) -> None:
+        legal    = self.game.get_legal_moves()
+        peg_cnt  = self.game.get_peg_count()
+        clusters = self.solver._divide(self.game.pegs)
+
+        if not legal:
+            messagebox.showinfo("Analysis",
+                f"PEGS: {peg_cnt}\nNo legal moves remaining.")
+            return
+
+        h = v = 0
+        for s, _, e in legal:
+            r1, _ = self.graph.nodes[s]
+            r2, _ = self.graph.nodes[e]
+            if r1 == r2:
+                h += 1
+            else:
+                v += 1
+
+        messagebox.showinfo("Position Analysis",
+            f"PEGS REMAINING : {peg_cnt}\n"
+            f"LEGAL MOVES    : {len(legal)}\n"
+            f"  Horizontal   : {h}\n"
+            f"  Vertical     : {v}\n\n"
+            f"DIVIDE & CONQUER\n"
+            f"  Clusters     : {len(clusters)}\n"
+            f"  Sizes        : {[len(c) for c in clusters]}\n\n"
+            f"Progress       : {32 - peg_cnt} / 31 moves\n\n"
+            f"SOLVER INFO\n"
+            f"  D&C calls    : {self.solver._dc_call_count}\n"
+            f"  TT states    : {len(self.solver.transposition_table)}\n"
+           )
+        self.lbl_status.config(
+            text=f"{len(legal)} legal moves | {len(clusters)} D&C clusters")
+    def show_stats(self) -> None:
+        peg_cnt  = self.game.get_peg_count()
+        hist_len = len(self.game.history)
+        messagebox.showinfo("Statistics",
+            f"CURRENT PEGS   : {peg_cnt}\n"
+            f"MOVES MADE     : {hist_len}\n"
+            f"PROGRESS       : {32 - peg_cnt} / 31\n\n"
+            f"DIVIDE AND CONQUER STRATEGY\n"
+            f"  DIVIDE  -> Partition pegs into independent clusters\n"
+            f"             (Manhattan distance <= 2 interaction graph)\n"
+            f"  CONQUER -> Solve each cluster recursively\n"
+            f"             Small (<={DivideAndConquerSolver.SMALL_THRESHOLD}): "
+            f"exhaustive DFS\n"
+            f"             Large: BFS reduction then recurse\n"
+            f"  COMBINE -> Serialise sub-solutions into global plan")
+
+
+# ======================================================================
+# PegSolitaireApp
+# ======================================================================
+class PegSolitaireApp:
+    def __init__(self, root: tk.Tk):
+        self.root = root
+        self.root.title("Peg Solitaire \u2014 Divide and Conquer")
+        self.root.geometry("800x900")
+        self.root.minsize(700,800)
+        self.root.configure(bg="#1a2634")
+        self.colors = {
+            'bg':        '#1a2634',
+            'primary':   '#2c3e50',
+            'secondary': '#34495e',
+            'accent1':   '#e74c3c',
+            'accent2':   '#3498db',
+            'accent3':   '#2ecc71',
+            'text':      '#ecf0f1',
+            'highlight': '#f1c40f'
+        }
+        self.current_frame: Optional[tk.Frame] = None
+        self.show_main_menu()
+    def clear_window(self) -> None:
+        if self.current_frame:
+            self.current_frame.destroy()
+    def show_main_menu(self) -> None:
+        self.clear_window()
+        frame = tk.Frame(self.root, bg=self.colors['bg'])
+        frame.pack(fill="both", expand=True)
+        self.current_frame = frame
+        header = tk.Frame(frame, bg=self.colors['bg'])
+        header.pack(pady=50)
+        tk.Label(header, text="PEG SOLITAIRE",
+                 font=("Helvetica", 36, "bold"),
+                 bg=self.colors['bg'], fg=self.colors['accent3']).pack()
+        tk.Frame(header, height=2, width=400,
+                 bg=self.colors['accent1']).pack(pady=20)
+        tk.Label(header, text="Algorithmic Approach: Divide and Conquer",
+                 font=("Helvetica", 16, "italic"),
+                 bg=self.colors['bg'], fg=self.colors['highlight']).pack()
+        tk.Label(header, text="DIVIDE  \u2192  CONQUER  \u2192  COMBINE",
+                 font=("Helvetica", 13),
+                 bg=self.colors['bg'], fg=self.colors['text']).pack(pady=6)
+        btns = tk.Frame(frame, bg=self.colors['bg'])
+        btns.pack(pady=40)
+        bstyle = dict(font=("Helvetica", 16, "bold"),
+                      width=25, height=2, bd=0, cursor="hand2")
+        tk.Button(btns, text="\U0001f1ec\U0001f1e7  ENGLISH VERSION",
+                  bg=self.colors['accent1'], fg="white",
+                  activebackground="#c0392b", activeforeground="white",
+                  command=lambda: self.start_game("english"),
+                  **bstyle).pack(pady=10)
+        tk.Button(btns, text="\U0001f1ea\U0001f1fa  EUROPEAN VERSION",
+                  bg=self.colors['accent2'], fg="white",
+                  activebackground="#2980b9", activeforeground="white",
+                  command=lambda: self.start_game("european"),
+                  **bstyle).pack(pady=10)
+        tk.Button(btns, text="\u274c  EXIT",
+                  bg=self.colors['accent3'], fg="white",
+                  activebackground="#27ae60", activeforeground="white",
+                  command=self.root.quit,
+                  **bstyle).pack(pady=10)
+        tk.Label(frame,
+                 text="Recursive Sub-problem Decomposition  \u2022  "
+                      "Transposition Table  \u2022  BFS + DFS Conquer",
+                 font=("Helvetica", 10),
+                 bg=self.colors['bg'], fg=self.colors['text']
+                 ).pack(side="bottom", pady=20)
+    def start_game(self, version: str) -> None:
+        self.clear_window()
+        self.current_frame = GameFrame(
+            self.root, version, self.show_main_menu, self.colors)
+        self.current_frame.pack(fill="both", expand=True)
+if __name__ == "__main__":
+    root = tk.Tk()
+    try:
+        root.iconbitmap(default='icon.ico')
+    except Exception:
+        pass
+    app = PegSolitaireApp(root)
+    root.update_idletasks()
+    w = root.winfo_width()
+    h = root.winfo_height()
+    x = (root.winfo_screenwidth()  // 2) - (w // 2)
+    y = (root.winfo_screenheight() // 2) - (h // 2)
+    root.geometry(f'{w}x{h}+{x}+{y}')
+    root.mainloop()
