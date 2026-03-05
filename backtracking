@@ -92,94 +92,109 @@ class GameState:
         return len(self.get_legal_moves()) == 0
 
 # ======================================================================
-# Backtracker + State Cache
+# Backtracker + State Cache +move ordering
 # ======================================================================
 
 class HeuristicDFSSolver:
 
-    def __init__(self, game_state):
+    def _init_(self, game_state):
         self.game = game_state
-        self.graph = game_state.graph
-        self.solution_cache = None
-
-        self.search_thread = None
+        self.visited = set()
         self.search_cancel = False
+        self.search_thread = None
         self.callback = None
-
-
-    def score_move(self, move):
-        start, mid, end = move
-        r, c = self.graph.nodes[end]
-
-    
-        center_dist = abs(r - 3) + abs(c - 3)
-
-        return center_dist
-
-    def ordered_moves(self):
-        moves = self.game.get_legal_moves()
-        moves.sort(key=self.move_score)
-        return moves
-
-    def _dfs(self):
-
-        if self.search_cancel:
-            return False
-
+        self.solution_cache = None
+        self.states_evaluated = 0
         
-        if self.game.get_peg_count() == 1:
-            return True
+        self.center = (3, 3)
+        self.hole_weights = {}
+        for idx, (r, c) in enumerate(self.game.graph.nodes):
+            self.hole_weights[idx] = abs(r - self.center[0]) + abs(c - self.center[1])
 
-        moves = self.ordered_moves()
-
-        for move in moves:
-
-            self.game.execute_move(move)
-
-            if self.solve_recursive():
-                self.solution_cache.insert(0, move)
-                return True
-
-           
-            self.game.undo()
-
-        return False
-
-  
-
+    def start_solving(self, callback):
         self.cancel_solving()
         self.search_cancel = False
         self.callback = callback
-
-        self.solution_cache = []
-
+        self.visited.clear()
+        self.states_evaluated = 0
         self.search_thread = threading.Thread(target=self._threaded_search)
         self.search_thread.daemon = True
         self.search_thread.start()
 
+    def _pegs_to_bitboard(self, pegs):
+        bitboard = 0
+        for p in pegs:
+            bitboard = (bitboard << 1) | p
+        return bitboard
+
+    def _score_move(self, pegs, move):
+        s, m, e = move
+        return self.hole_weights[s] + self.hole_weights[m] - self.hole_weights[e]
+
+    def _dfs(self, pegs, move_history):
+        if self.search_cancel:
+            return False
+
+        self.states_evaluated += 1
+        if self.states_evaluated % 50000 == 0:
+            if hasattr(self, 'game_frame'):
+                self.game_frame.after(0, lambda: self.game_frame.lbl_status.config(
+                    text=f"Searching... {self.states_evaluated:,} states evaluated"))
+
+        if sum(pegs) == 1:
+            return move_history
+
+        bitboard = self._pegs_to_bitboard(pegs)
+        if bitboard in self.visited:
+            return False
+        self.visited.add(bitboard)
+
+        legal_moves = []
+        for s, m, e in self.game.graph.valid_jumps:
+            if pegs[s] == 1 and pegs[m] == 1 and pegs[e] == 0:
+                legal_moves.append((s, m, e))
+
+        if not legal_moves:
+            return False
+
+        legal_moves.sort(key=lambda move: self._score_move(pegs, move), reverse=True)
+
+        for s, m, e in legal_moves:
+            pegs[s] = pegs[m] = 0
+            pegs[e] = 1
+            move_history.append((s, m, e))
+
+            result = self._dfs(pegs, move_history)
+            if result:
+                return result
+
+            pegs[s] = pegs[m] = 1
+            pegs[e] = 0
+            move_history.pop()
+
+        return False
+
     def _threaded_search(self):
-
-        solved = self.solve_recursive()
-
-        solution = None
-        if solved:
-            solution = self.solution_cache
-
-        if self.callback:
-            self.game_frame.after(0, self.callback, solution)
+        import time
+        start = time.time()
+        pegs = self.game.pegs[:]
+        solution = self._dfs(pegs, [])
+        elapsed = time.time() - start
+        
+        self.solution_cache = solution
+        
+        if self.callback and not self.search_cancel:
+            if hasattr(self, 'game_frame'):
+                msg = f"Solving the game" if solution else "No solution"
+                self.game_frame.after(0, lambda: self.game_frame.lbl_status.config(text=msg))
+                
+            self.game_frame.after(0, self.callback, solution if solution else None)
 
     def cancel_solving(self):
         self.search_cancel = True
         if self.search_thread and self.search_thread.is_alive():
             self.search_thread.join(timeout=0.1)
         self.search_thread = None
-
-    def get_hint_move(self):
-
-        if self.solution_cache:
-            return self.solution_cache[0]
-
-        return None
 
    
     
