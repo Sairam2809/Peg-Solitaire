@@ -95,6 +95,94 @@ class GameState:
 # Backtracker + State Cache
 # ======================================================================
 
+class HeuristicDFSSolver:
+
+    def __init__(self, game_state):
+        self.game = game_state
+        self.graph = game_state.graph
+        self.solution_cache = None
+
+        self.search_thread = None
+        self.search_cancel = False
+        self.callback = None
+
+
+    def score_move(self, move):
+        start, mid, end = move
+        r, c = self.graph.nodes[end]
+
+    
+        center_dist = abs(r - 3) + abs(c - 3)
+
+        return center_dist
+
+    def ordered_moves(self):
+        moves = self.game.get_legal_moves()
+        moves.sort(key=self.move_score)
+        return moves
+
+    def _dfs(self):
+
+        if self.search_cancel:
+            return False
+
+        
+        if self.game.get_peg_count() == 1:
+            return True
+
+        moves = self.ordered_moves()
+
+        for move in moves:
+
+            self.game.execute_move(move)
+
+            if self.solve_recursive():
+                self.solution_cache.insert(0, move)
+                return True
+
+           
+            self.game.undo()
+
+        return False
+
+  
+
+        self.cancel_solving()
+        self.search_cancel = False
+        self.callback = callback
+
+        self.solution_cache = []
+
+        self.search_thread = threading.Thread(target=self._threaded_search)
+        self.search_thread.daemon = True
+        self.search_thread.start()
+
+    def _threaded_search(self):
+
+        solved = self.solve_recursive()
+
+        solution = None
+        if solved:
+            solution = self.solution_cache
+
+        if self.callback:
+            self.game_frame.after(0, self.callback, solution)
+
+    def cancel_solving(self):
+        self.search_cancel = True
+        if self.search_thread and self.search_thread.is_alive():
+            self.search_thread.join(timeout=0.1)
+        self.search_thread = None
+
+    def get_hint_move(self):
+
+        if self.solution_cache:
+            return self.solution_cache[0]
+
+        return None
+
+   
+    
 
 # ======================================================================
 # UI
